@@ -8,6 +8,7 @@ mod chain_edit;
 mod controls;
 mod editing;
 mod eq_graph;
+mod pedal;
 mod presets;
 mod setlists;
 mod tuner;
@@ -928,114 +929,141 @@ impl EditorApp {
             ui.label(format!("Slot {slot} holds unknown FX type {}", s.type_id));
             return;
         };
-        let doc = tables::fx_doc(t.name);
-        ui.horizontal(|ui| {
-            ui.heading(t.name);
-            if let Some(on) = controls::switch(ui, s.on) {
-                self.set_fx_switch(slot, on);
-            }
-            ui.label(RichText::new(format!("slot {slot}")).weak());
-            self.presets_menu(ui, data, slot, t);
-            self.chain_buttons(ui, data, slot);
-        });
-        // What the effect does (and what it models), from the parameter guide.
-        if let Some(d) = doc.filter(|d| !d.text.is_empty()) {
-            ui.add(egui::Label::new(RichText::new(d.text).weak()).wrap());
-        }
-        ui.add_space(4.0);
-        // PARAMETRIC EQUALIZER: its frequency response, with draggable bands.
-        let eq = eq_graph::Eq::read(s.on, |k| t.param(k.fx_name()).and_then(|p| data.fx_param(slot, p)));
-        if let Some(eq) = eq {
-            for (k, v) in eq_graph::graph(ui, ("fx-eq", slot), &eq) {
-                if let Some(p) = t.param(k.fx_name()) {
-                    self.set_fx_param(slot, p, v);
-                }
-            }
-            ui.add_space(6.0);
-        }
-        let params: Vec<&'static FxParamDef> =
-            t.params.iter().filter(|p| matches!(p.field, FxField::Param(_))).collect();
-        if t.name == "PARAMETRIC EQUALIZER" && self.peq_controls(ui, data, slot, t) {
-            return;
-        }
-        // Numbered sets (a dual CHORUS's "1: RATE", "2: RATE") get a row of their own.
-        let mut groups: Vec<(Option<&str>, Vec<&'static FxParamDef>)> = Vec::new();
-        for p in params {
-            let g = controls::short_name(p.name).0;
-            match groups.iter_mut().find(|(k, _)| *k == g) {
-                Some((_, ps)) => ps.push(p),
-                None => groups.push((g, vec![p])),
-            }
-        }
-        for (g, ps) in groups {
-            if let Some(g) = g {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(g).strong());
-                    ui.add(egui::Separator::default().horizontal());
+        let ty_label = t.param("type").and_then(|p| data.fx_param(slot, p).map(|v| p.display(v)));
+        let look = pedal::look(t.name, ty_label.as_deref(), t.color);
+        let mut toggle = false;
+        ui.horizontal_top(|ui| {
+            if let Some(l) = &look {
+                ui.vertical(|ui| {
+                    ui.add_space(4.0);
+                    let value = |p: &FxParamDef| data.fx_param(slot, p);
+                    toggle = pedal::show(ui, l, t, ty_label.as_deref(), s.on, &value);
                 });
+                ui.add_space(12.0);
             }
-            let kind = |p: &FxParamDef| controls::control_for(t, p);
-            // Knobs side by side, then the faders, then switches and lists.
-            for row in [controls::Control::Knob, controls::Control::Fader] {
-                if ps.iter().any(|p| kind(p) == row) {
-                    controls::row(ui, |ui| {
-                        for p in ps.iter().filter(|p| kind(p) == row) {
-                            self.fx_scale(ui, data, slot, t, p, controls::short_name(p.name).1, row);
-                        }
-                    });
-                    ui.add_space(8.0);
+            ui.vertical(|ui| {
+                let doc = tables::fx_doc(t.name);
+                ui.horizontal(|ui| {
+                    ui.heading(t.name);
+                    if let Some(on) = controls::switch(ui, s.on) {
+                        self.set_fx_switch(slot, on);
+                    }
+                    ui.label(RichText::new(format!("slot {slot}")).weak());
+                    self.presets_menu(ui, data, slot, t);
+                    self.chain_buttons(ui, data, slot);
+                });
+                // What the effect does (and what it models), from the parameter guide.
+                if let Some(d) = doc.filter(|d| !d.text.is_empty()) {
+                    ui.add(egui::Label::new(RichText::new(d.text).weak()).wrap());
                 }
-            }
-            let rest: Vec<_> =
-                ps.iter().filter(|p| !matches!(kind(p), controls::Control::Knob | controls::Control::Fader)).collect();
-            if rest.is_empty() {
-                continue;
-            }
-            egui::Grid::new(("fx-params", slot, g)).num_columns(2).striped(true).spacing([16.0, 8.0]).show(ui, |ui| {
-                for p in rest {
-                    let pdoc = doc.and_then(|d| d.param(p.unique_name));
-                    let color = if self.fx_flashing(slot, p) { AMBER } else { ui.visuals().text_color() };
-                    editing::doc_label(ui, RichText::new(controls::short_name(p.name).1).color(color), pdoc);
-                    let Some(v) = data.fx_param(slot, p) else {
-                        ui.label("—");
-                        ui.end_row();
+                ui.add_space(4.0);
+                // PARAMETRIC EQUALIZER: its frequency response, with draggable bands.
+                let eq = eq_graph::Eq::read(s.on, |k| t.param(k.fx_name()).and_then(|p| data.fx_param(slot, p)));
+                if let Some(eq) = eq {
+                    for (k, v) in eq_graph::graph(ui, ("fx-eq", slot), &eq) {
+                        if let Some(p) = t.param(k.fx_name()) {
+                            self.set_fx_param(slot, p, v);
+                        }
+                    }
+                    ui.add_space(6.0);
+                }
+                let params: Vec<&'static FxParamDef> =
+                    t.params.iter().filter(|p| matches!(p.field, FxField::Param(_))).collect();
+                if t.name == "PARAMETRIC EQUALIZER" && self.peq_controls(ui, data, slot, t) {
+                    return;
+                }
+                // Numbered sets (a dual CHORUS's "1: RATE", "2: RATE") get a row of their own.
+                let mut groups: Vec<(Option<&str>, Vec<&'static FxParamDef>)> = Vec::new();
+                for p in params {
+                    let g = controls::short_name(p.name).0;
+                    match groups.iter_mut().find(|(k, _)| *k == g) {
+                        Some((_, ps)) => ps.push(p),
+                        None => groups.push((g, vec![p])),
+                    }
+                }
+                for (g, ps) in groups {
+                    if let Some(g) = g {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(g).strong());
+                            ui.add(egui::Separator::default().horizontal());
+                        });
+                    }
+                    let kind = |p: &FxParamDef| controls::control_for(t, p);
+                    // Knobs side by side, then the faders, then switches and lists.
+                    for row in [controls::Control::Knob, controls::Control::Fader] {
+                        if ps.iter().any(|p| kind(p) == row) {
+                            controls::row(ui, |ui| {
+                                for p in ps.iter().filter(|p| kind(p) == row) {
+                                    self.fx_scale(ui, data, slot, t, p, controls::short_name(p.name).1, row);
+                                }
+                            });
+                            ui.add_space(8.0);
+                        }
+                    }
+                    let rest: Vec<_> = ps
+                        .iter()
+                        .filter(|p| !matches!(kind(p), controls::Control::Knob | controls::Control::Fader))
+                        .collect();
+                    if rest.is_empty() {
                         continue;
-                    };
-                    ui.vertical(|ui| {
-                        let new = match kind(p) {
-                            controls::Control::Switch => ui
-                                .horizontal(|ui| controls::switch(ui, v == p.max))
-                                .inner
-                                .map(|on| if on { p.max } else { p.min }),
-                            controls::Control::Buttons => {
-                                let mut picked = None;
-                                ui.horizontal_wrapped(|ui| {
-                                    for (o, label) in editing::fx_options(p) {
-                                        let r = ui.radio(o == v, label);
-                                        let r = match pdoc.and_then(|d| d.option(label)) {
-                                            Some(t) => r.on_hover_text(t),
-                                            None => r,
-                                        };
-                                        if r.clicked() && o != v {
-                                            picked = Some(o);
+                    }
+                    egui::Grid::new(("fx-params", slot, g)).num_columns(2).striped(true).spacing([16.0, 8.0]).show(
+                        ui,
+                        |ui| {
+                            for p in rest {
+                                let pdoc = doc.and_then(|d| d.param(p.unique_name));
+                                let color = if self.fx_flashing(slot, p) { AMBER } else { ui.visuals().text_color() };
+                                editing::doc_label(
+                                    ui,
+                                    RichText::new(controls::short_name(p.name).1).color(color),
+                                    pdoc,
+                                );
+                                let Some(v) = data.fx_param(slot, p) else {
+                                    ui.label("—");
+                                    ui.end_row();
+                                    continue;
+                                };
+                                ui.vertical(|ui| {
+                                    let new = match kind(p) {
+                                        controls::Control::Switch => ui
+                                            .horizontal(|ui| controls::switch(ui, v == p.max))
+                                            .inner
+                                            .map(|on| if on { p.max } else { p.min }),
+                                        controls::Control::Buttons => {
+                                            let mut picked = None;
+                                            ui.horizontal_wrapped(|ui| {
+                                                for (o, label) in editing::fx_options(p) {
+                                                    let r = ui.radio(o == v, label);
+                                                    let r = match pdoc.and_then(|d| d.option(label)) {
+                                                        Some(t) => r.on_hover_text(t),
+                                                        None => r,
+                                                    };
+                                                    if r.clicked() && o != v {
+                                                        picked = Some(o);
+                                                    }
+                                                }
+                                            });
+                                            picked
                                         }
+                                        _ => editing::fx_param_widget(ui, slot, p, v, pdoc),
+                                    };
+                                    if let Some(n) = new {
+                                        self.set_fx_param(slot, p, n);
+                                    }
+                                    if !p.labels().is_empty() {
+                                        editing::option_note(ui, pdoc, &p.display(v));
                                     }
                                 });
-                                picked
+                                ui.end_row();
                             }
-                            _ => editing::fx_param_widget(ui, slot, p, v, pdoc),
-                        };
-                        if let Some(n) = new {
-                            self.set_fx_param(slot, p, n);
-                        }
-                        if !p.labels().is_empty() {
-                            editing::option_note(ui, pdoc, &p.display(v));
-                        }
-                    });
-                    ui.end_row();
+                        },
+                    );
                 }
             });
+        });
+        if toggle {
+            self.set_fx_switch(slot, !s.on);
         }
     }
 
